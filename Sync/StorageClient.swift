@@ -167,7 +167,13 @@ private func optionalUIntegerHeader(input: AnyObject?) -> Timestamp? {
     return nil
 }
 
+public enum SortOption: String {
+    case newest
+    case index
+}
+
 public struct ResponseMetadata {
+    public let status: Int
     public let alert: String?
     public let nextOffset: String?
     public let records: UInt64?
@@ -178,10 +184,11 @@ public struct ResponseMetadata {
     public let retryAfterMilliseconds: UInt64?
 
     public init(response: NSHTTPURLResponse) {
-        self.init(headers: response.allHeaderFields)
+        self.init(status: response.statusCode, headers: response.allHeaderFields)
     }
 
-    public init(headers: [NSObject : AnyObject]) {
+    init(status: Int, headers: [NSObject : AnyObject]) {
+        self.status = status
         alert = headers["X-Weave-Alert"] as? String
         nextOffset = headers["X-Weave-Next-Offset"] as? String
         records = optionalUIntegerHeader(headers["X-Weave-Records"])
@@ -627,16 +634,31 @@ public class Sync15CollectionClient<T: CleartextPayloadJSON> {
      * multiple requests. The others use application/newlines. We don't want to write
      * another Serializer, and we're loading everything into memory anyway.
      */
-    public func getSince(since: Timestamp) -> Deferred<Maybe<StorageResponse<[Record<T>]>>> {
+    public func getSince(since: Timestamp, sort: SortOption?=nil, limit: Int?=nil, offset: String?=nil) -> Deferred<Maybe<StorageResponse<[Record<T>]>>> {
         let deferred = Deferred<Maybe<StorageResponse<[Record<T>]>>>(defaultQueue: client.resultQueue)
 
         if self.client.checkBackoff(deferred) {
             return deferred
         }
 
-        let req = client.requestGET(self.collectionURI.withQueryParams([
+        var params: [NSURLQueryItem] = [
             NSURLQueryItem(name: "full", value: "1"),
-            NSURLQueryItem(name: "newer", value: millisecondsToDecimalSeconds(since))]))
+            NSURLQueryItem(name: "newer", value: millisecondsToDecimalSeconds(since)),
+        ]
+
+        if let offset = offset {
+            params.append(NSURLQueryItem(name: "offset", value: offset))
+        }
+
+        if let limit = limit {
+            params.append(NSURLQueryItem(name: "limit", value: "\(limit)"))
+        }
+
+        if let sort = sort {
+            params.append(NSURLQueryItem(name: "sort", value: sort.rawValue))
+        }
+
+        let req = client.requestGET(self.collectionURI.withQueryParams(params))
 
         req.responsePartialParsedJSON(queue: collectionQueue, completionHandler: self.client.errorWrap(deferred) { (_, response, result) in
 
