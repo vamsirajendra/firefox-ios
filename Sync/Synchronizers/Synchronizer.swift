@@ -113,7 +113,7 @@ public protocol SingleCollectionSynchronizer {
     func remoteHasChanges(info: InfoCollections) -> Bool
 }
 
-public class BaseSingleCollectionSynchronizer: SingleCollectionSynchronizer {
+public class BaseCollectionSynchronizer {
     let collection: String
 
     let scratchpad: Scratchpad
@@ -135,25 +135,6 @@ public class BaseSingleCollectionSynchronizer: SingleCollectionSynchronizer {
         return 0
     }
 
-    var lastFetched: Timestamp {
-        set(value) {
-            self.prefs.setLong(value, forKey: "lastFetched")
-        }
-
-        get {
-            return self.prefs.unsignedLongForKey("lastFetched") ?? 0
-        }
-    }
-
-    func setTimestamp(timestamp: Timestamp) {
-        log.debug("Setting post-upload lastFetched to \(timestamp).")
-        self.lastFetched = timestamp
-    }
-
-    public func remoteHasChanges(info: InfoCollections) -> Bool {
-        return info.modified(self.collection) > self.lastFetched
-    }
-
     public func reasonToNotSync(client: Sync15StorageClient) -> SyncNotStartedReason? {
         let now = NSDate.now()
         if let until = client.backoff.isInBackoff(now) {
@@ -161,10 +142,10 @@ public class BaseSingleCollectionSynchronizer: SingleCollectionSynchronizer {
             return .Backoff(remainingSeconds: Int(remaining))
         }
 
-        if let _ = self.scratchpad.global?.value {
+        if let metaGlobal = self.scratchpad.global?.value {
             // There's no need to check the global storage format here; the state machine will already have
             // done so.
-            if let engineMeta = self.scratchpad.global?.value.engines?[collection] {
+            if let engineMeta = metaGlobal.engines[collection] {
                 if engineMeta.version > self.storageVersion {
                     return .EngineFormatOutdated(needs: engineMeta.version)
                 }
@@ -192,5 +173,31 @@ public class BaseSingleCollectionSynchronizer: SingleCollectionSynchronizer {
             return storageClient.clientForCollection(self.collection, encrypter: encrypter)
         }
         return nil
+    }
+}
+
+/**
+ * Tracks a lastFetched timestamp, uses it to decide if there are any
+ * remote changes, and exposes a method to fast-forward after upload.
+ */
+public class TimestampedSingleCollectionSynchronizer: BaseCollectionSynchronizer, SingleCollectionSynchronizer {
+
+    var lastFetched: Timestamp {
+        set(value) {
+            self.prefs.setLong(value, forKey: "lastFetched")
+        }
+
+        get {
+            return self.prefs.unsignedLongForKey("lastFetched") ?? 0
+        }
+    }
+
+    func setTimestamp(timestamp: Timestamp) {
+        log.debug("Setting post-upload lastFetched to \(timestamp).")
+        self.lastFetched = timestamp
+    }
+
+    public func remoteHasChanges(info: InfoCollections) -> Bool {
+        return info.modified(self.collection) > self.lastFetched
     }
 }

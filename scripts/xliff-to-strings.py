@@ -37,7 +37,9 @@ FILES = [
     "Client/Info.plist",
     "Client/Intro.strings",
     "Client/Localizable.strings",
+    "Client/PrivateBrowsing.strings",
     "Client/Search.strings",
+    "Client/Storage.strings",
     "Extensions/SendTo/Info.plist",
     "Extensions/SendTo/SendTo.strings",
     "Extensions/ShareTo/ShareTo.strings",
@@ -48,6 +50,7 @@ FILES = [
 # Because Xcode is unpredictable. See bug 1162510 - Sync.strings are not imported
 FILENAME_OVERRIDES = {
     "Shared/Supporting Files/Info.plist": "Shared/Localizable.strings",
+    "Storage.strings": "Client/Storage.strings",
 }
 
 def export_xliff_file(file_node, export_path, target_language):

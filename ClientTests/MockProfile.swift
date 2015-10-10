@@ -23,6 +23,12 @@ public class MockSyncManager: SyncManager {
 
     public func beginTimedSyncs() {}
     public func endTimedSyncs() {}
+    public func applicationDidBecomeActive() {
+        self.beginTimedSyncs()
+    }
+    public func applicationDidEnterBackground() {
+        self.endTimedSyncs()
+    }
 
     public func onAddedAccount() -> Success {
         return succeed()
@@ -113,7 +119,7 @@ public class MockProfile: Profile {
         return ReadingListService(profileStoragePath: self.files.rootPath as String)
     }()
 
-    private lazy var remoteClientsAndTabs: RemoteClientsAndTabs = {
+    internal lazy var remoteClientsAndTabs: RemoteClientsAndTabs = {
         return SQLiteRemoteClientsAndTabs(db: self.db)
     }()
 

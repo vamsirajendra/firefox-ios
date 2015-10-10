@@ -10,8 +10,8 @@ import Shared
 protocol TabManagerDelegate: class {
     func tabManager(tabManager: TabManager, didSelectedTabChange selected: Browser?, previous: Browser?)
     func tabManager(tabManager: TabManager, didCreateTab tab: Browser, restoring: Bool)
-    func tabManager(tabManager: TabManager, didAddTab tab: Browser, atIndex: Int, restoring: Bool)
-    func tabManager(tabManager: TabManager, didRemoveTab tab: Browser, atIndex index: Int)
+    func tabManager(tabManager: TabManager, didAddTab tab: Browser, restoring: Bool)
+    func tabManager(tabManager: TabManager, didRemoveTab tab: Browser)
     func tabManagerDidRestoreTabs(tabManager: TabManager)
     func tabManagerDidAddTabs(tabManager: TabManager)
 }
@@ -53,19 +53,44 @@ class TabManager : NSObject {
     private var _selectedIndex = -1
     private let defaultNewTabRequest: NSURLRequest
     private let navDelegate: TabManagerNavDelegate
-    private var configuration: WKWebViewConfiguration
+
+    // A WKWebViewConfiguration used for normal tabs
+    lazy private var configuration: WKWebViewConfiguration = {
+        let configuration = WKWebViewConfiguration()
+        configuration.processPool = WKProcessPool()
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = !(self.profile.prefs.boolForKey("blockPopups") ?? true)
+        return configuration
+    }()
+
+    // A WKWebViewConfiguration used for private mode tabs
+    @available(iOS 9, *)
+    lazy private var privateConfiguration: WKWebViewConfiguration = {
+        let configuration = WKWebViewConfiguration()
+        configuration.processPool = WKProcessPool()
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = !(self.profile.prefs.boolForKey("blockPopups") ?? true)
+        configuration.websiteDataStore = WKWebsiteDataStore.nonPersistentDataStore()
+        return configuration
+    }()
+
     private let imageStore: DiskImageStore
 
     unowned let profile: Profile
     var selectedIndex: Int { return _selectedIndex }
 
+    var normalTabs: [Browser] {
+        return tabs.filter { !$0.isPrivate }
+    }
+
+    var privateTabs: [Browser] {
+        if #available(iOS 9, *) {
+            return tabs.filter { $0.isPrivate }
+        } else {
+            return []
+        }
+    }
+
     init(defaultNewTabRequest: NSURLRequest, profile: Profile) {
         self.profile = profile
-        // Create a common webview configuration with a shared process pool.
-        configuration = WKWebViewConfiguration()
-        configuration.processPool = WKProcessPool()
-        configuration.preferences.javaScriptCanOpenWindowsAutomatically = !(self.profile.prefs.boolForKey("blockPopups") ?? true)
-
         self.defaultNewTabRequest = defaultNewTabRequest
         self.navDelegate = TabManagerNavDelegate()
         self.imageStore = DiskImageStore(files: profile.files, namespace: "TabManagerScreenshots", quality: UIConstants.ScreenshotQuality)
@@ -122,12 +147,10 @@ class TabManager : NSObject {
 
         let previous = selectedTab
 
-        _selectedIndex = -1
-        for i in 0..<count {
-            if tabs[i] === tab {
-                _selectedIndex = i
-                break
-            }
+        if let tab = tab {
+            _selectedIndex = tabs.indexOf(tab) ?? -1
+        } else {
+            _selectedIndex = -1
         }
 
         preserveTabs()
@@ -147,7 +170,11 @@ class TabManager : NSObject {
     }
 
     @available(iOS 9, *)
-    func addTab(request: NSURLRequest! = nil, configuration: WKWebViewConfiguration! = nil, isPrivate: Bool) -> Browser {
+    func addTab(request: NSURLRequest! = nil, var configuration: WKWebViewConfiguration! = nil, isPrivate: Bool) -> Browser {
+        if (configuration == nil) && isPrivate {
+            configuration = privateConfiguration
+        }
+
         return self.addTab(request, configuration: configuration, flushToDisk: true, zombie: false, isPrivate: isPrivate)
     }
 
@@ -183,7 +210,14 @@ class TabManager : NSObject {
         assert(NSThread.isMainThread())
         configuration?.preferences.javaScriptCanOpenWindowsAutomatically = !(self.profile.prefs.boolForKey("blockPopups") ?? true)
 
-        let tab = Browser(configuration: configuration ?? self.configuration, isPrivate: isPrivate)
+        let defaultConfiguration: WKWebViewConfiguration
+        if (configuration == nil) && isPrivate {
+            defaultConfiguration = privateConfiguration
+        } else {
+            defaultConfiguration = self.configuration
+        }
+
+        let tab = Browser(configuration: configuration ?? defaultConfiguration, isPrivate: isPrivate)
         configureTab(tab, request: request, flushToDisk: flushToDisk, zombie: zombie, restoring: restoring)
         return tab
     }
@@ -198,7 +232,7 @@ class TabManager : NSObject {
         return tab
     }
 
-    private func configureTab(tab: Browser, request: NSURLRequest?, flushToDisk: Bool, zombie: Bool, restoring: Bool) {
+    func configureTab(tab: Browser, request: NSURLRequest?, flushToDisk: Bool, zombie: Bool, restoring: Bool) {
         for delegate in delegates {
             delegate.get()?.tabManager(self, didCreateTab: tab, restoring: restoring)
         }
@@ -206,7 +240,7 @@ class TabManager : NSObject {
         tabs.append(tab)
 
         for delegate in delegates {
-            delegate.get()?.tabManager(self, didAddTab: tab, atIndex: tabs.count - 1, restoring: restoring)
+            delegate.get()?.tabManager(self, didAddTab: tab, restoring: restoring)
         }
 
         if !zombie {
@@ -242,11 +276,9 @@ class TabManager : NSObject {
         }
 
         let prevCount = count
-        var index = -1
         for i in 0..<count {
             if tabs[i] === tab {
                 tabs.removeAtIndex(i)
-                index = i
                 break
             }
         }
@@ -261,10 +293,11 @@ class TabManager : NSObject {
         tab.webView?.navigationDelegate = nil
 
         for delegate in delegates {
-            delegate.get()?.tabManager(self, didRemoveTab: tab, atIndex: index)
+            delegate.get()?.tabManager(self, didRemoveTab: tab)
         }
 
-        if count == 0 {
+        // Make sure we never reach 0 normal tabs
+        if !tab.isPrivate && normalTabs.count == 0 {
             addTab()
         }
 
@@ -293,9 +326,9 @@ class TabManager : NSObject {
         return -1
     }
 
-    private func storeChanges() {
+    func storeChanges() {
         // It is possible that not all tabs have loaded yet, so we filter out tabs with a nil URL.
-        let storedTabs: [RemoteTab] = optFilter(tabs.map(Browser.toTab))
+        let storedTabs: [RemoteTab] = normalTabs.flatMap( Browser.toTab )
         self.profile.storeTabs(storedTabs)
 
         // Also save (full) tab state to disk
@@ -318,6 +351,7 @@ extension TabManager {
     class SavedTab: NSObject, NSCoding {
         let isSelected: Bool
         let title: String?
+        let isPrivate: Bool
         var sessionData: SessionData?
         var screenshotUUID: NSUUID?
 
@@ -325,6 +359,7 @@ extension TabManager {
             self.screenshotUUID = browser.screenshotUUID
             self.isSelected = isSelected
             self.title = browser.displayTitle
+            self.isPrivate = browser.isPrivate
             super.init()
 
             if browser.sessionData == nil {
@@ -351,6 +386,7 @@ extension TabManager {
             self.screenshotUUID = coder.decodeObjectForKey("screenshotUUID") as? NSUUID
             self.isSelected = coder.decodeBoolForKey("isSelected")
             self.title = coder.decodeObjectForKey("title") as? String
+            self.isPrivate = coder.decodeBoolForKey("isPrivate")
         }
 
         func encodeWithCoder(coder: NSCoder) {
@@ -358,6 +394,7 @@ extension TabManager {
             coder.encodeObject(screenshotUUID, forKey: "screenshotUUID")
             coder.encodeBool(isSelected, forKey: "isSelected")
             coder.encodeObject(title, forKey: "title")
+            coder.encodeBool(isPrivate, forKey: "isPrivate")
         }
     }
 
@@ -411,7 +448,12 @@ extension TabManager {
                     var tabToSelect: Browser?
 
                     for (_, savedTab) in savedTabs.enumerate() {
-                        let tab = self.addTab(flushToDisk: false, zombie: true, restoring: true)
+                        let tab: Browser
+                        if #available(iOS 9, *) {
+                            tab = self.addTab(flushToDisk: false, zombie: true, restoring: true, isPrivate: savedTab.isPrivate)
+                        } else {
+                            tab = self.addTab(flushToDisk: false, zombie: true, restoring: true)
+                        }
 
                         // Set the UUID for the tab, asynchronously fetch the UIImage, then store
                         // the screenshot in the tab as long as long as a newer one hasn't been taken.

@@ -16,9 +16,7 @@ public class SQLiteRemoteClientsAndTabs: RemoteClientsAndTabs {
 
     public init(db: BrowserDB) {
         self.db = db
-        db.createOrUpdate(clients)
-        db.createOrUpdate(tabs)
-        db.createOrUpdate(commands)
+        self.db.createOrUpdate(clients, tabs, commands)
     }
 
     private func doWipe(f: (conn: SQLiteDBConnection, inout err: NSError?) -> ()) -> Deferred<Maybe<()>> {
