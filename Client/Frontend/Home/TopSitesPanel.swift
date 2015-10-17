@@ -26,6 +26,13 @@ class TopSitesPanel: UIViewController {
     }()
     private lazy var layout: TopSitesLayout = { return TopSitesLayout() }()
 
+    private lazy var maxFrecencyLimit: Int = {
+        return max(
+            self.calculateApproxThumbnailCountForOrientation(UIInterfaceOrientation.LandscapeLeft),
+            self.calculateApproxThumbnailCountForOrientation(UIInterfaceOrientation.Portrait)
+        )
+    }()
+
     var editingThumbnails: Bool = false {
         didSet {
             if editingThumbnails != oldValue {
@@ -44,8 +51,8 @@ class TopSitesPanel: UIViewController {
 
     override func viewWillTransitionToSize(size: CGSize, withTransitionCoordinator coordinator: UIViewControllerTransitionCoordinator) {
         super.viewWillTransitionToSize(size, withTransitionCoordinator: coordinator)
-        self.refreshHistory(self.layout.thumbnailCount)
         self.layout.setupForOrientation(UIView.viewOrientationForSize(size))
+        self.collection?.reloadData()
     }
 
     override func supportedInterfaceOrientations() -> UIInterfaceOrientationMask {
@@ -76,7 +83,7 @@ class TopSitesPanel: UIViewController {
             make.edges.equalTo(self.view)
         }
         self.collection = collection
-        self.refreshHistory(layout.thumbnailCount)
+        self.refreshHistory(maxFrecencyLimit)
     }
 
     deinit {
@@ -87,7 +94,7 @@ class TopSitesPanel: UIViewController {
     func notificationReceived(notification: NSNotification) {
         switch notification.name {
         case NotificationFirefoxAccountChanged, NotificationPrivateDataClearedHistory:
-            refreshHistory(self.layout.thumbnailCount)
+            refreshHistory(maxFrecencyLimit)
             break
         default:
             // no need to do anything at all
@@ -155,6 +162,40 @@ class TopSitesPanel: UIViewController {
                 self.updateRemoveButtonStates()
             })
         }
+    }
+
+    /**
+    Calculates an approximation of the number of tiles we want to display for the given orientation. This
+    method uses the screen's size as it's basis for the calculation instead of the collectionView's since the 
+    collectionView's bounds is determined until the next layout pass.
+
+    - parameter orientation: Orientation to calculate number of tiles for
+
+    - returns: Rough tile count we will be displaying for the passed in orientation
+    */
+    private func calculateApproxThumbnailCountForOrientation(orientation: UIInterfaceOrientation) -> Int {
+        let size = UIScreen.mainScreen().bounds.size
+        let portraitSize = CGSize(width: min(size.width, size.height), height: max(size.width, size.height))
+
+        func calculateRowsForSize(size: CGSize, columns: Int) -> Int {
+            let insets = ThumbnailCellUX.Insets
+            let thumbnailWidth = (size.width - insets.left - insets.right) / CGFloat(columns)
+            let thumbnailHeight = thumbnailWidth / CGFloat(ThumbnailCellUX.ImageAspectRatio)
+            return max(2, Int(size.height / thumbnailHeight))
+        }
+
+        let numberOfColumns: Int
+        let numberOfRows: Int
+
+        if UIInterfaceOrientationIsLandscape(orientation) {
+            numberOfColumns = 5
+            numberOfRows = calculateRowsForSize(CGSize(width: portraitSize.height, height: portraitSize.width), columns: numberOfColumns)
+        } else {
+            numberOfColumns = 4
+            numberOfRows = calculateRowsForSize(portraitSize, columns: numberOfColumns)
+        }
+
+        return numberOfColumns * numberOfRows
     }
 }
 
@@ -361,6 +402,7 @@ private class TopSitesDataSource: NSObject, UICollectionViewDataSource {
                     cell.imageView.sd_setImageWithURL(icons[0].url.asURL!) { (img, err, type, url) -> Void in
                         if let img = img {
                             cell.backgroundImage.image = img
+                            cell.backgroundEffect?.alpha = 1
                             cell.image = img
                         } else {
                             let icon = Favicon(url: "", date: NSDate(), type: IconType.NoneFound)
@@ -387,12 +429,13 @@ private class TopSitesDataSource: NSObject, UICollectionViewDataSource {
         //
         // Instead we'll painstakingly re-extract those things here.
 
-        let domainURL = NSURL(string: site.url)?.normalizedHost() ?? site.url
+        let domainURL = NSURL(string: site.url)?.host ?? site.url
         cell.textLabel.text = domainURL
         cell.imageWrapper.backgroundColor = UIColor.clearColor()
 
         // Resets used cell's background image so that it doesn't get recycled when a tile doesn't update its background image.
         cell.backgroundImage.image = nil
+        cell.backgroundEffect?.alpha = 0
 
         if let icon = site.icon {
             // We've looked before recently and didn't find a favicon
@@ -403,6 +446,7 @@ private class TopSitesDataSource: NSObject, UICollectionViewDataSource {
                 cell.imageView.sd_setImageWithURL(icon.url.asURL, completed: { (img, err, type, url) -> Void in
                     if let img = img {
                         cell.backgroundImage.image = img
+                        cell.backgroundEffect?.alpha = 1
                         cell.image = img
                     } else {
                         self.getFavicon(cell, site: site)
@@ -423,6 +467,7 @@ private class TopSitesDataSource: NSObject, UICollectionViewDataSource {
         cell.textLabel.text = site.title.isEmpty ? NSURL(string: site.url)?.normalizedHostAndPath() : site.title
         cell.imageWrapper.backgroundColor = site.backgroundColor
         cell.backgroundImage.image = nil
+        cell.backgroundEffect?.alpha = 0
 
         if let icon = site.wordmark.url.asURL,
            let host = icon.host {

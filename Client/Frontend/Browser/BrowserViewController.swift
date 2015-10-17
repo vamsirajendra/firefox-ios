@@ -73,7 +73,7 @@ class BrowserViewController: UIViewController {
     private var topTouchArea: UIButton!
 
     // Backdrop used for displaying greyed background for private tabs
-    private var webViewContainerBackdrop: UIView!
+    var webViewContainerBackdrop: UIView!
 
     private var scrollController = BrowserScrollingController()
 
@@ -369,18 +369,14 @@ class BrowserViewController: UIViewController {
             // This assumes that the DB returns rows in some kind of sane order.
             // It does in practice, so WFM.
             log.debug("Queue. Count: \(cursor.count).")
-            if cursor.count > 0 {
-                var urls = [NSURL]()
-                for row in cursor {
-                    if let url = row?.url.asURL {
-                        log.debug("Queuing \(url).")
-                        urls.append(url)
-                    }
-                }
-                if !urls.isEmpty {
-                    dispatch_async(dispatch_get_main_queue()) {
-                        self.tabManager.addTabsForURLs(urls, zombie: false)
-                    }
+            if cursor.count <= 0 {
+                return
+            }
+
+            let urls = cursor.flatMap { $0?.url.asURL }
+            if !urls.isEmpty {
+                dispatch_async(dispatch_get_main_queue()) {
+                    self.tabManager.addTabsForURLs(urls, zombie: false)
                 }
             }
 
@@ -417,30 +413,59 @@ class BrowserViewController: UIViewController {
             // Reset previous crash state
             activeCrashReporter?.resetPreviousCrashState()
 
-            let crashPrompt = UIAlertView(
-                title: CrashPromptMessaging.Title,
-                message: CrashPromptMessaging.Description,
-                delegate: self,
-                cancelButtonTitle: CrashPromptMessaging.Negative,
-                otherButtonTitles: CrashPromptMessaging.Affirmative
-            )
-            crashPrompt.show()
+            // Only ask to restore tabs from a crash if we had non-home tabs or tabs with some kind of history in them
+            guard let tabsToRestore = tabManager.tabsToRestore() else { return }
+            let onlyNoHistoryTabs = !tabsToRestore.every { $0.sessionData?.urls.count > 1 }
+            if onlyNoHistoryTabs {
+                tabManager.addTabAndSelect();
+                return
+            }
+
+            let optedIntoCrashReporting = profile.prefs.boolForKey("crashreports.send.always")
+            if optedIntoCrashReporting == nil {
+                // Offer a chance to allow the user to opt into crash reporting
+                showCrashOptInAlert()
+            } else {
+                showRestoreTabsAlert()
+            }
         } else {
-            restoreTabs()
+            tabManager.restoreTabs()
         }
 
         updateTabCountUsingTabManager(tabManager, animated: false)
     }
 
-    private func restoreTabs() {
-        if tabManager.count == 0 && !AppConstants.IsRunningTest {
-            tabManager.restoreTabs()
-        }
+    private func showCrashOptInAlert() {
+        let alert = UIAlertController.crashOptInAlert(
+            sendReportCallback: { _ in
+                // Turn on uploading but don't save opt-in flag to profile because this is a one time send.
+                configureActiveCrashReporter(true)
+                self.showRestoreTabsAlert()
+            },
+            alwaysSendCallback: { _ in
+                self.profile.prefs.setBool(true, forKey: "crashreports.send.always")
+                configureActiveCrashReporter(true)
+                self.showRestoreTabsAlert()
+            },
+            dontSendCallback: { _ in
+                // no-op: Do nothing if we don't want to send it
+                self.showRestoreTabsAlert()
+            }
+        )
+        self.presentViewController(alert, animated: true, completion: nil)
+    }
 
-        if tabManager.count == 0 {
-            let tab = tabManager.addTab()
-            tabManager.selectTab(tab)
-        }
+    private func showRestoreTabsAlert() {
+        let alert = UIAlertController.restoreTabsAlert(
+            okayCallback: { _ in
+                self.tabManager.restoreTabs()
+            },
+            noCallback: { _ in
+                self.tabManager.addTabAndSelect()
+            }
+        )
+
+        self.presentViewController(alert, animated: true, completion: nil)
     }
 
     override func viewDidAppear(animated: Bool) {
@@ -1011,7 +1036,7 @@ extension BrowserViewController: BrowserToolbarDelegate {
                 log.error("Bookmark error: No tab is selected, or no URL in tab.")
                 return
         }
-        profile.bookmarks.isBookmarked(url).upon {
+        profile.bookmarks.isBookmarked(url).uponQueue(dispatch_get_main_queue()) {
             guard let isBookmarked = $0.successValue else {
                 log.error("Bookmark error: \($0.failureValue).")
                 return
@@ -1351,14 +1376,19 @@ extension BrowserViewController: TabManagerDelegate {
             addOpenInViewIfNeccessary(webView.URL)
 
             if let url = webView.URL?.absoluteString {
-                profile.bookmarks.isBookmarked(url).upon {
-                    guard let isBookmarked = $0.successValue else {
-                        log.error("Error getting bookmark status: \($0.failureValue).")
-                        return
-                    }
+                // Don't bother fetching bookmark state for about/sessionrestore and about/home.
+                if AboutUtils.isAboutURL(webView.URL) {
+                    // Indeed, because we don't show the toolbar at all, don't even blank the star.
+                } else {
+                    profile.bookmarks.isBookmarked(url).uponQueue(dispatch_get_main_queue()) {
+                        guard let isBookmarked = $0.successValue else {
+                            log.error("Error getting bookmark status: \($0.failureValue).")
+                            return
+                        }
 
-                    self.toolbar?.updateBookmarkStatus(isBookmarked)
-                    self.urlBar.updateBookmarkStatus(isBookmarked)
+                        self.toolbar?.updateBookmarkStatus(isBookmarked)
+                        self.urlBar.updateBookmarkStatus(isBookmarked)
+                    }
                 }
             } else {
                 // The web view can go gray if it was zombified due to memory pressure.
@@ -1563,6 +1593,15 @@ extension BrowserViewController: WKNavigationDelegate {
             // VoiceOver will sometimes be stuck on the element, not allowing user to move
             // forward/backward. Strange, but LayoutChanged fixes that.
             UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification, nil)
+        } else {
+            // Tab is in the backgroud, but we want to be able to see it in the TabTray.
+            // Delay 100ms to let the tab render (it doesn't work without the delay)
+            // before screenshotting.
+            let time = dispatch_time(DISPATCH_TIME_NOW, Int64(100 * NSEC_PER_MSEC))
+            dispatch_after(time, dispatch_get_main_queue()) {
+                let screenshot = self.screenshotHelper.takeScreenshot(tab, aspectRatio: 0, quality: 1)
+                tab.setScreenshot(screenshot)
+            }
         }
 
         addOpenInViewIfNeccessary(webView.URL)
@@ -2113,7 +2152,25 @@ extension BrowserViewController: ContextMenuHelperDelegate {
             let copyAction = UIAlertAction(title: copyImageTitle, style: UIAlertActionStyle.Default) { (action: UIAlertAction) -> Void in
                 let pasteBoard = UIPasteboard.generalPasteboard()
                 pasteBoard.string = url.absoluteString
-                // TODO: put the actual image on the clipboard
+                // put the actual image on the clipboard
+                // do this be asyncronously just in case we're in a low bandwidth situation
+                let application = UIApplication.sharedApplication()
+                var taskId: UIBackgroundTaskIdentifier = 0
+                taskId = application.beginBackgroundTaskWithExpirationHandler { _ in
+                    application.endBackgroundTask(taskId)
+                }
+
+                Alamofire.request(.GET, url)
+                    .response { responseRequest, responseResponse, responseData, responseError in
+                        // only set the image onto pasteboard if the thing currently in pasteboard is
+                        // the URL of this image, otherwise, in low bandwidth situations,
+                        // we might be overwriting something that the user has subsequently added
+                        if pasteBoard.string == url.absoluteString {
+                            guard let imageData = responseData where responseError == nil else { return }
+                            pasteBoard.image = UIImage(data: imageData)
+                            application.endBackgroundTask(taskId)
+                        }
+                }
             }
             actionSheetController.addAction(copyAction)
         }
@@ -2175,36 +2232,6 @@ extension BrowserViewController: SessionRestoreHelperDelegate {
     }
 }
 
-private struct CrashPromptMessaging {
-    static let Title = NSLocalizedString("Well, this is embarrassing.", comment: "Restore Tabs Prompt Title")
-    static let Description = NSLocalizedString("Looks like Firefox crashed previously. Would you like to restore your tabs?", comment: "Restore Tabs Prompt Description")
-    static let Affirmative = NSLocalizedString("Okay", comment: "Restore Tabs Affirmative Action")
-    static let Negative = NSLocalizedString("No", comment: "Restore Tabs Negative Action")
-}
-
-extension BrowserViewController: UIAlertViewDelegate {
-    private enum CrashPromptIndex: Int {
-        case Cancel = 0
-        case Restore = 1
-    }
-
-    func alertView(alertView: UIAlertView, clickedButtonAtIndex buttonIndex: Int) {
-        func addAndSelect() {
-            let tab = tabManager.addTab()
-            tabManager.selectTab(tab)
-        }
-
-        if buttonIndex == CrashPromptIndex.Restore.rawValue {
-            self.restoreTabs()
-            if tabManager.count == 0 {
-                addAndSelect()
-            }
-        } else {
-            addAndSelect()
-        }
-    }
-}
-
 // MARK: Browser Chrome Theming
 extension BrowserViewController {
 
@@ -2232,6 +2259,9 @@ extension BrowserViewController {
         TabsButton.appearance().titleBackgroundColor = UIConstants.AppBackgroundColor
         TabsButton.appearance().textColor = UIConstants.PrivateModePurple
         TabsButton.appearance().insets = UIEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
+
+        ReaderModeBarView.appearance().backgroundColor = UIConstants.PrivateModeReaderModeBackgroundColor
+        ReaderModeBarView.appearance().buttonTintColor = UIColor.whiteColor()
 
         header.blurStyle = .Dark
         footerBackground?.blurStyle = .Dark
@@ -2261,6 +2291,9 @@ extension BrowserViewController {
         TabsButton.appearance().titleBackgroundColor = TabsButtonUX.TitleBackgroundColor
         TabsButton.appearance().textColor = TabsButtonUX.TitleColor
         TabsButton.appearance().insets = TabsButtonUX.TitleInsets
+
+        ReaderModeBarView.appearance().backgroundColor = UIColor.whiteColor()
+        ReaderModeBarView.appearance().buttonTintColor = UIColor.darkGrayColor()
 
         header.blurStyle = .ExtraLight
         footerBackground?.blurStyle = .ExtraLight

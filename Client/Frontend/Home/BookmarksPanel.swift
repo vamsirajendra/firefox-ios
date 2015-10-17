@@ -128,6 +128,12 @@ class BookmarksPanel: SiteTableViewController, HomePanel {
         return cell
     }
 
+    func tableView(tableView: UITableView, willDisplayCell cell: UITableViewCell, forRowAtIndexPath indexPath: NSIndexPath) {
+        if let cell = cell as? BookmarkFolderTableViewCell {
+            cell.textLabel?.font = BookmarksPanelUX.BookmarkFolderTextFont
+        }
+    }
+
     override func tableView(tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
         // Don't show a header for the root
         if source == nil || parentFolders.isEmpty {
@@ -135,8 +141,6 @@ class BookmarksPanel: SiteTableViewController, HomePanel {
         }
         guard let header = tableView.dequeueReusableHeaderFooterViewWithIdentifier(BookmarkFolderHeaderViewIdentifier) as? BookmarkFolderTableViewHeader else { return nil }
 
-        // for some reason specifying the font in header view init is being ignored, so setting it here
-        header.textLabel?.font = BookmarksPanelUX.BookmarkFolderTextFont
         // register as delegate to ensure we get notified when the user interacts with this header
         if header.delegate == nil {
             header.delegate = self
@@ -160,6 +164,13 @@ class BookmarksPanel: SiteTableViewController, HomePanel {
         return SiteTableViewControllerUX.RowHeight
     }
 
+    func tableView(tableView: UITableView, willDisplayHeaderView view: UIView, forSection section: Int) {
+        if let header = view as? BookmarkFolderTableViewHeader {
+            // for some reason specifying the font in header view init is being ignored, so setting it here
+            header.textLabel?.font = BookmarksPanelUX.BookmarkFolderTextFont
+        }
+    }
+
     func tableView(tableView: UITableView, didSelectRowAtIndexPath indexPath: NSIndexPath) {
         tableView.deselectRowAtIndexPath(indexPath, animated: false)
         if let source = source {
@@ -172,9 +183,10 @@ class BookmarksPanel: SiteTableViewController, HomePanel {
 
             case let folder as BookmarkFolder:
                 let nextController = BookmarksPanel()
-                nextController.parentFolders = parentFolders + [folder]
+                nextController.parentFolders = parentFolders + [source.current]
                 nextController.bookmarkFolder = folder.guid
                 nextController.source = source
+                nextController.homePanelDelegate = self.homePanelDelegate
                 nextController.profile = self.profile
                 self.navigationController?.pushViewController(nextController, animated: true)
                 break
@@ -258,15 +270,17 @@ extension BookmarksPanel: BookmarkFolderTableViewHeaderDelegate {
 }
 
 class BookmarkFolderTableViewCell: TwoLineTableViewCell {
-    let topBorder = UIView()
-    let bottomBorder = UIView()
+    private let ImageMargin: CGFloat = 12
 
     override init(style: UITableViewCellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
         self.backgroundColor = SiteTableViewControllerUX.HeaderBackgroundColor
+        textLabel?.backgroundColor = UIColor.clearColor()
         textLabel?.tintColor = BookmarksPanelUX.BookmarkFolderTextColor
         textLabel?.font = BookmarksPanelUX.BookmarkFolderTextFont
+
         imageView?.image = UIImage(named: "bookmarkFolder")
+
         let chevron = ChevronView(direction: .Right)
         chevron.tintColor = BookmarksPanelUX.BookmarkFolderTextColor
         chevron.frame = CGRectMake(0, 0, BookmarksPanelUX.BookmarkFolderChevronSize, BookmarksPanelUX.BookmarkFolderChevronSize)
@@ -276,46 +290,67 @@ class BookmarkFolderTableViewCell: TwoLineTableViewCell {
         separatorInset = UIEdgeInsetsZero
     }
 
+    override func layoutSubviews() {
+        super.layoutSubviews()
+
+        // doing this here as TwoLineTableViewCell changes the imageView frame in it's layoutSubviews and we have to make sure it is right
+        if let imageSize = imageView?.image?.size {
+            imageView?.frame = CGRectMake(ImageMargin, (frame.height - imageSize.width) / 2, imageSize.width, imageSize.height)
+        }
+    }
+
     required init?(coder aDecoder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 }
 
-private class BookmarkFolderTableViewHeader : SiteTableViewHeader {
+private class BookmarkFolderTableViewHeader : UITableViewHeaderFooterView {
     var delegate: BookmarkFolderTableViewHeaderDelegate?
+
+    lazy var titleLabel: UILabel = {
+        let label = UILabel()
+        label.textColor = UIConstants.HighlightBlue
+        return label
+    }()
+
+    lazy var chevron: ChevronView = {
+        let chevron = ChevronView(direction: .Left)
+        chevron.tintColor = UIConstants.HighlightBlue
+        chevron.lineWidth = BookmarksPanelUX.BookmarkFolderChevronLineWidth
+        return chevron
+    }()
+
+    override var textLabel: UILabel? {
+        return titleLabel
+    }
 
     override init(reuseIdentifier: String?) {
         super.init(reuseIdentifier: reuseIdentifier)
-        // set the background color to white
-        self.backgroundView = UIView(frame: self.bounds)
-        self.backgroundView?.backgroundColor = UIColor.clearColor()
-        contentView.backgroundColor = UIColor.clearColor()
-
-        textLabel?.textColor = UIConstants.HighlightBlue
-        let chevron = ChevronView(direction: .Left)
-        chevron.tintColor = UIConstants.HighlightBlue
-        chevron.frame = CGRectMake(BookmarksPanelUX.BookmarkFolderHeaderViewChevronInset, (SiteTableViewControllerUX.RowHeight / 2) - BookmarksPanelUX.BookmarkFolderHeaderViewChevronInset, BookmarksPanelUX.BookmarkFolderChevronSize, BookmarksPanelUX.BookmarkFolderChevronSize)
-        chevron.lineWidth = BookmarksPanelUX.BookmarkFolderChevronLineWidth
-        addSubview(chevron)
 
         userInteractionEnabled = true
 
         let tapGestureRecognizer = UITapGestureRecognizer(target: self, action: "viewWasTapped:")
         tapGestureRecognizer.numberOfTapsRequired = 1
         addGestureRecognizer(tapGestureRecognizer)
+
+        contentView.addSubview(chevron)
+        contentView.addSubview(titleLabel)
+
+        chevron.snp_makeConstraints { make in
+            make.left.equalTo(contentView).offset(BookmarksPanelUX.BookmarkFolderHeaderViewChevronInset)
+            make.centerY.equalTo(contentView)
+            make.size.equalTo(BookmarksPanelUX.BookmarkFolderChevronSize)
+        }
+
+        titleLabel.snp_makeConstraints { make in
+            make.left.equalTo(chevron.snp_right).offset(BookmarksPanelUX.BookmarkFolderHeaderViewChevronInset)
+            make.right.equalTo(contentView).offset(-BookmarksPanelUX.BookmarkFolderHeaderViewChevronInset)
+            make.centerY.equalTo(contentView)
+        }
     }
 
     required init?(coder aDecoder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
-    }
-
-    private override func layoutSubviews() {
-        super.layoutSubviews()
-
-        if var textLabelFrame = textLabel?.frame {
-            textLabelFrame.origin.x += (BookmarksPanelUX.BookmarkFolderChevronSize + (BookmarksPanelUX.BookmarkFolderHeaderViewChevronInset / 2))
-            textLabel?.frame = textLabelFrame
-        }
     }
 
     @objc private func viewWasTapped(gestureRecognizer: UITapGestureRecognizer) {

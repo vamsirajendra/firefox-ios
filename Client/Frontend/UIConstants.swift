@@ -14,6 +14,7 @@ public struct UIConstants {
     static let PrivateModeLocationBorderColor = UIColor(red: 255, green: 255, blue: 255, alpha: 0.15)
     static let PrivateModeActionButtonTintColor = UIColor(red: 255, green: 255, blue: 255, alpha: 0.8)
     static let PrivateModeTextHighlightColor = UIColor(red: 120 / 255, green: 120 / 255, blue: 165 / 255, alpha: 1)
+    static let PrivateModeReaderModeBackgroundColor = UIColor(red: 89 / 255, green: 89 / 255, blue: 89 / 255, alpha: 1)
 
     static let ToolbarHeight: CGFloat = 44
     static let DefaultRowHeight: CGFloat = 58
@@ -61,13 +62,6 @@ public struct UIConstants {
 
 /// Strings that will be used for features that haven't yet landed.
 private struct TempStrings {
-    // Bug 1189902 - Offer crash reporting on first run after a crash
-    let crashReportTitle = NSLocalizedString("Oops! Firefox crashed", comment: "Pending feature; currently unused string! Title for prompt displayed to user after the app crashes")
-    let crashReportDescription = NSLocalizedString("Send a crash report so Mozilla can fix the problem?", comment: "Pending feature; currently unused string! Message displayed in the crash dialog above the buttons used to select when sending reports")
-    let sendReport = NSLocalizedString("Send Report", comment: "Pending feature; currently unused string! Used as a button label for crash dialog prompt")
-    let alwaysSend = NSLocalizedString("Always Send", comment: "Pending feature; currently unused string! Used as a button label for crash dialog prompt")
-    let dontSend = NSLocalizedString("Don't Send", comment: "Pending feature; currently unused string! Used as a button label for crash dialog prompt")
-    let neverSend = NSLocalizedString("Never Send", comment: "Pending feature; currently unused string! Used as a button label for crash dialog prompt")
 
     // Bug 1109675 - Request Desktop Site
     let requestDesktopSite = NSLocalizedString("Request Desktop Site", comment: "Pending feature; currently unused string! Tooltip label triggered by long pressing the refresh button.")
